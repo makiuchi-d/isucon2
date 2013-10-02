@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS isucon2.variation (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `name` VARCHAR(255) NOT NULL,
   `ticket_id` INT UNSIGNED NOT NULL,
+  `ticket_name` varchar(255) DEFAULT NULL,
+  `artist_id` int(11) DEFAULT NULL,
+  `artist_name` varchar(255) DEFAULT NULL,
+  `vacancy` int(10) unsigned DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB;
 
@@ -40,6 +44,10 @@ CREATE TABLE IF NOT EXISTS isucon2.stock (
 CREATE TABLE IF NOT EXISTS isucon2.order_request (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `member_id` VARCHAR(32) NOT NULL,
+  `seat_id` varchar(255) DEFAULT NULL,
+  `v_name` varchar(255) DEFAULT NULL,
+  `t_name` varchar(255) DEFAULT NULL,
+  `a_name` varchar(255) DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `member_order` (`member_id`)
 ) ENGINE=InnoDB;

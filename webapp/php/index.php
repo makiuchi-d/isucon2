@@ -1,4 +1,5 @@
 <?php
+require_once('lib/redis.php');
 
 if (php_sapi_name() === 'cli-server') {
     if (preg_match('/\.(?:png|jpg|jpeg|gif)$/', $_SERVER['REQUEST_URI'])) {
@@ -44,15 +45,8 @@ function before()
     layout('layout.html.php');
     $path = option('base_path');
     if ('/' === $path || preg_match('#^/(?:artist|ticket)#', $path)) {
-        $sql = <<<SQL
-SELECT stock.seat_id, variation.name AS v_name, ticket.name AS t_name, artist.name AS a_name
-FROM stock
-JOIN variation ON stock.variation_id = variation.id
-JOIN ticket ON variation.ticket_id = ticket.id
-JOIN artist ON ticket.artist_id = artist.id
-WHERE order_id IS NOT NULL
-ORDER BY order_id DESC LIMIT 10
-SQL;
+	$sql = 'SELECT * FROM order_request ORDER BY id DESC LIMIT 10';
+
         $db = option('db_conn');
         $stmt = $db->query($sql);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -71,27 +65,15 @@ dispatch('/', function () {
 dispatch('/artist/:id', function() {
     $db = option('db_conn');
 
-    $stmt = $db->prepare('SELECT id, name FROM artist WHERE id = :id LIMIT 1');
-    $stmt->bindValue(':id', params('id'));
-    $stmt->execute();
-    $artist = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    $stmt = $db->prepare('SELECT id, name FROM ticket WHERE artist_id = :id ORDER BY id');
-    $stmt->bindValue(':id', params('id'));
-    $stmt->execute();
-    $tickets = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    $sql = <<<SQL
-SELECT COUNT(*) FROM variation
-INNER JOIN stock ON stock.variation_id = variation.id
-WHERE variation.ticket_id = :ticket_id AND stock.order_id IS NULL
-SQL;
+    $sql = 'select ticket_id as id,ticket_name as name,sum(vacancy) as count,artist_id,artist_name from variation where artist_id=? group by ticket_id';
     $stmt = $db->prepare($sql);
-    foreach ($tickets as &$ticket) {
-        $stmt->bindValue(':ticket_id', $ticket['id']);
-        $stmt->execute();
-        $ticket['count'] = $stmt->fetchColumn();
-    }
+    $stmt->execute(array(params('id')));
+    $tickets = $stmt->fetchAll();
+
+    $artist = array(
+        'id' => $tickets[0]['artist_id'],
+        'name' => $tickets[0]['artist_name'],
+    );
 
     set('artist', $artist);
     set('tickets', $tickets);
@@ -101,20 +83,15 @@ SQL;
 dispatch('/ticket/:id', function() {
     $db = option('db_conn');
 
-    $sql = <<<SQL
-SELECT t.*, a.name AS artist_name FROM ticket t
-INNER JOIN artist a ON t.artist_id = a.id WHERE t.id = :id
-LIMIT 1
-SQL;
-    $stmt = $db->prepare($sql);
-    $stmt->bindValue(':id', params('id'));
-    $stmt->execute();
-    $ticket = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    $stmt = $db->prepare('SELECT id, name FROM variation WHERE ticket_id = :id ORDER BY id');
-    $stmt->bindValue(':id', $ticket['id']);
-    $stmt->execute();
+    $stmt = $db->prepare('SELECT * FROM variation WHERE ticket_id = ?');
+    $stmt->execute(array(params('id')));
     $variations = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $ticket = array(
+        'id' => $variations[0]['ticket_id'],
+        'name' => $variations[0]['ticket_name'],
+        'artist_id' => $variations[0]['artist_id'],
+        'artist_name' => $variations[0]['artist_name'],
+    );
 
     foreach ($variations as &$variation) {
         $variation['stock'] = array();
@@ -124,11 +101,6 @@ SQL;
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $stock) {
             $variation['stock'][$stock['seat_id']] = $stock;
         }
-
-        $stmt = $db->prepare('SELECT COUNT(*) FROM stock WHERE variation_id = :id AND order_id IS NULL');
-        $stmt->bindValue(':id', $variation['id']);
-        $stmt->execute();
-        $variation['vacancy'] = $stmt->fetchColumn();
     }
 
     set('ticket', $ticket);
@@ -143,34 +115,43 @@ dispatch_post('/buy', function() {
     $variation_id = $_POST['variation_id'];
     $member_id = $_POST['member_id'];
 
-    $stmt = $db->prepare('INSERT INTO order_request (member_id) VALUES (:id)');
-    $stmt->bindValue(':id', $member_id);
-    $stmt->execute();
-    $order_id = $db->lastInsertId();
-
-    $sql = <<<SQL
-UPDATE stock SET order_id = :order_id
-WHERE variation_id = :variation_id
-AND order_id IS NULL
-ORDER BY RAND()
-LIMIT 1
-SQL;
-    $stmt = $db->prepare($sql);
-    $stmt->bindValue(':order_id', $order_id);
-    $stmt->bindValue(':variation_id', $variation_id);
-    if (false !== $stmt->execute()) {
-        $stmt = $db->prepare('SELECT seat_id FROM stock WHERE order_id = :order_id LIMIT 1');
-        $stmt->bindValue(':order_id', $order_id);
-        $stmt->execute();
-        $seat_id = $stmt->fetchColumn();
-        $db->commit();
-        set('member_id', $member_id);
-        set('seat_id', $seat_id);
-        return html('complete.html.php');
-    } else {
+    $stmt = $db->prepare('SELECT * FROM variation WHERE id=? FOR UPDATE');
+    $stmt->execute(array($variation_id));
+    $variation = $stmt->fetch(PDO::FETCH_ASSOC);
+    if($variation['vacancy']<=0){
         $db->rollback();
         return html('soldout.html.php');
     }
+    $rand = mt_rand(0,$variation['vacancy']-1);
+
+    $sql = "SELECT * FROM stock WHERE variation_id=? AND order_id IS NULL LIMIT 1 OFFSET $rand";
+    $stmt = $db->prepare($sql);
+    $stmt->execute(array($variation_id));
+    $stock = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    $stmt = $db->prepare('INSERT INTO order_request (member_id,seat_id,v_name,t_name,a_name) VALUES (:id,:seat_id,:v_name,:t_name,:a_name)');
+    $stmt->bindValue(':id', $member_id);
+    $stmt->bindValue(':seat_id', $stock['seat_id']);
+    $stmt->bindValue(':v_name', $variation['name']);
+    $stmt->bindValue(':t_name', $variation['ticket_name']);
+    $stmt->bindValue(':a_name', $variation['artist_name']);
+    $stmt->execute();
+    $order_id = $db->lastInsertId();
+
+    $stmt = $db->prepare('UPDATE stock SET order_id = :order_id WHERE id=:id');
+    $stmt->execute(array(
+        ':id' => $stock['id'],
+        ':order_id' => $order_id,
+    ));
+
+    $stmt = $db->prepare('UPDATE variation SET vacancy = vacancy -1 WHERE id=?');
+    $stmt->execute(array($variation_id));
+
+    $db->commit();
+    set('member_id', $member_id);
+    set('seat_id', $stock['seat_id']);
+
+    return html('complete.html.php');
 });
 
 dispatch('/admin', function () {
