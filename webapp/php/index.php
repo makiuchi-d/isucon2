@@ -45,29 +45,53 @@ function before()
     layout('layout.html.php');
     $path = option('base_path');
     if ('/' === $path || preg_match('#^/(?:artist|ticket)#', $path)) {
-	$sql = 'SELECT * FROM order_request ORDER BY id DESC LIMIT 10';
-
-        $db = option('db_conn');
-        $stmt = $db->query($sql);
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $cachekey = "recent_orders";
+        $cache = redis_cache_get($cachekey);
+        if($cache){
+            $rows = json_decode($cache,true);
+        }
+        else{
+            $sql = 'SELECT * FROM order_request ORDER BY id DESC LIMIT 10';
+            $db = option('db_conn');
+            $stmt = $db->query($sql);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            redis_cache_set($cachekey,json_encode($rows),0.7);
+        }
         set('recent_sold', $rows);
     }
 }
 
 dispatch('/', function () {
+    $cachekey = "page_cache_/";
+    $cache = redis_cache_get($cachekey);
+    if($cache){
+        return $cache;
+    }
+
     $db = option('db_conn');
     $stmt = $db->query('SELECT * FROM artist ORDER BY id');
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
     set('artists', $rows);
-    return html('index.html.php');
+
+    $page =  html('index.html.php');
+    redis_cache_set($cachekey,$page,0.7);
+    return $page;
 });
 
 dispatch('/artist/:id', function() {
+    $id = params('id');
+
+    $cachekey = "page_cache_artist:$id";
+    $cache = redis_cache_get($cachekey);
+    if($cache){
+        return $cache;
+    }
+
     $db = option('db_conn');
 
     $sql = 'select ticket_id as id,ticket_name as name,sum(vacancy) as count,artist_id,artist_name from variation where artist_id=? group by ticket_id';
     $stmt = $db->prepare($sql);
-    $stmt->execute(array(params('id')));
+    $stmt->execute(array($id));
     $tickets = $stmt->fetchAll();
 
     $artist = array(
@@ -77,14 +101,24 @@ dispatch('/artist/:id', function() {
 
     set('artist', $artist);
     set('tickets', $tickets);
-    return html('artist.html.php');
+    $page = html('artist.html.php');
+    redis_cache_set($cachekey,$page,0.7);
+    return $page;
 });
 
 dispatch('/ticket/:id', function() {
+    $ticket_id = params('id');
+
+    $cachekey = "page_cache_ticket:$ticket_id";
+    $cache = redis_cache_get($cachekey);
+    if($cache){
+        return $cache;
+    }
+
     $db = option('db_conn');
 
     $stmt = $db->prepare('SELECT * FROM variation WHERE ticket_id = ?');
-    $stmt->execute(array(params('id')));
+    $stmt->execute(array($ticket_id));
     $variations = $stmt->fetchAll(PDO::FETCH_ASSOC);
     $ticket = array(
         'id' => $variations[0]['ticket_id'],
@@ -105,7 +139,11 @@ dispatch('/ticket/:id', function() {
 
     set('ticket', $ticket);
     set('variations', $variations);
-    return html('ticket.html.php');
+
+    $page = html('ticket.html.php');
+
+    redis_cache_set($cachekey,$page,0.7);
+    return $page;
 });
 
 dispatch_post('/buy', function() {
