@@ -5,6 +5,7 @@ TRUNCATE TABLE isucon2.ticket;
 TRUNCATE TABLE isucon2.variation;
 TRUNCATE TABLE isucon2.stock;
 TRUNCATE TABLE isucon2.order_request;
+TRUNCATE TABLE isucon2.seat_random_list;
 
 INSERT INTO isucon2.artist (`id`, `name`) VALUES (1, "NHN48");
 INSERT INTO isucon2.artist (`id`, `name`) VALUES (2, "はだいろクローバーZ");
@@ -39,3 +40,7 @@ INSERT INTO isucon2.stock (`variation_id`, `seat_id`) VALUES (10, "00-00"), (10,
 
 update variation v left join ticket t on v.ticket_id=t.id left join artist a on t.artist_id=a.id set v.ticket_name=t.name, v.artist_id = a.id, v.artist_name = a.name;
 update variation v set vacancy = (select count(*) from stock where variation_id=v.id);
+
+set @n = 0;
+set @vid = 0;
+insert into seat_random_list (num,variation_id,stock_id,seat_id) select (@n:=if(tbl.variation_id=@vid,@n+1,1)) as num,(@vid:=tbl.variation_id) as variation_id,tbl.id as stock_id,tbl.seat_id from (select * from stock order by variation_id,rand()) tbl;

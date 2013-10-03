@@ -51,3 +51,12 @@ CREATE TABLE IF NOT EXISTS isucon2.order_request (
   PRIMARY KEY (`id`),
   KEY `member_order` (`member_id`)
 ) ENGINE=InnoDB;
+
+
+CREATE TABLE IF NOT EXISTS isucon2.seat_random_list (
+  `variation_id` INT UNSIGNED NOT NULL,
+  `num` INT UNSIGNED NOT NULL,
+  `stock_id` INT UNSIGNED NOT NULL,
+  `seat_id` varchar(255) NOT NULL,
+  PRIMARY KEY (variation_id,num)
+) ENGINE=InnoDB;

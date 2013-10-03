@@ -160,16 +160,17 @@ dispatch_post('/buy', function() {
         $db->rollback();
         return html('soldout.html.php');
     }
-    $rand = mt_rand(0,$variation['vacancy']-1);
 
-    $sql = "SELECT * FROM stock WHERE variation_id=? AND order_id IS NULL LIMIT 1 OFFSET $rand";
+	$sql = 'SELECT * FROM seat_random_list WHERE variation_id=:variation_id AND num=:num';
     $stmt = $db->prepare($sql);
-    $stmt->execute(array($variation_id));
-    $stock = $stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt->execute(array(
+       ':variation_id' => $variation_id,
+       ':num' => $variation['vacancy']));
+	$randomseat = $stmt->fetch(PDO::FETCH_ASSOC);
 
     $stmt = $db->prepare('INSERT INTO order_request (member_id,seat_id,v_name,t_name,a_name) VALUES (:id,:seat_id,:v_name,:t_name,:a_name)');
     $stmt->bindValue(':id', $member_id);
-    $stmt->bindValue(':seat_id', $stock['seat_id']);
+    $stmt->bindValue(':seat_id', $randomseat['seat_id']);
     $stmt->bindValue(':v_name', $variation['name']);
     $stmt->bindValue(':t_name', $variation['ticket_name']);
     $stmt->bindValue(':a_name', $variation['artist_name']);
@@ -178,7 +179,7 @@ dispatch_post('/buy', function() {
 
     $stmt = $db->prepare('UPDATE stock SET order_id = :order_id WHERE id=:id');
     $stmt->execute(array(
-        ':id' => $stock['id'],
+        ':id' => $randomseat['stock_id'],
         ':order_id' => $order_id,
     ));
 
@@ -187,7 +188,7 @@ dispatch_post('/buy', function() {
 
     $db->commit();
     set('member_id', $member_id);
-    set('seat_id', $stock['seat_id']);
+    set('seat_id', $randomseat['seat_id']);
 
     return html('complete.html.php');
 });
