@@ -61,6 +61,12 @@ function before()
     }
 }
 
+function after($output)
+{
+	redis_close_if_open();
+	return $output;
+}
+
 dispatch('/', function () {
     $cachekey = "page_cache_/";
     $cache = redis_cache_get($cachekey);
@@ -89,15 +95,28 @@ dispatch('/artist/:id', function() {
 
     $db = option('db_conn');
 
-    $sql = 'select ticket_id as id,ticket_name as name,sum(vacancy) as count,artist_id,artist_name from variation where artist_id=? group by ticket_id';
+	$sql = 'select * from variation where artist_id=?';
     $stmt = $db->prepare($sql);
     $stmt->execute(array($id));
-    $tickets = $stmt->fetchAll();
+    $variations = $stmt->fetchAll();
 
+    $redis = get_redis();
+    $tickets = array();
+    foreach($variations as $v){
+        if(!isset($tickets[$v['ticket_id']])){
+            $tickets[$v['ticket_id']]['id'] = $v['ticket_id'];
+            $tickets[$v['ticket_id']]['name'] = $v['ticket_name'];
+            $tickets[$v['ticket_id']]['count'] = 0;
+        }
+        $sales_count = (int)$redis->get("sales_count:{$v['id']}");
+        $tickets[$v['ticket_id']]['count'] += max(0,$v['total_seat']-$sales_count);
+    }
+
+    $v = array_pop($variations);
     $artist = array(
-        'id' => $tickets[0]['artist_id'],
-        'name' => $tickets[0]['artist_name'],
-    );
+        'id' => $v['artist_id'],
+        'name' => $v['artist_name'],
+        );
 
     set('artist', $artist);
     set('tickets', $tickets);
@@ -127,7 +146,12 @@ dispatch('/ticket/:id', function() {
         'artist_name' => $variations[0]['artist_name'],
     );
 
+	$redis = get_redis();
+
     foreach ($variations as &$variation) {
+		$sales_count = (int)$redis->get("sales_count:{$variation['id']}");
+		$variation['vacancy'] = max(0,$variation['total_seat']-$sales_count);
+
         $variation['stock'] = array();
         $stmt = $db->prepare('SELECT seat_id, order_id FROM stock WHERE variation_id = :id');
         $stmt->bindValue(':id', $variation['id']);
@@ -147,17 +171,20 @@ dispatch('/ticket/:id', function() {
 });
 
 dispatch_post('/buy', function() {
-    $db = option('db_conn');
-    $db->beginTransaction();
 
     $variation_id = $_POST['variation_id'];
     $member_id = $_POST['member_id'];
 
-    $stmt = $db->prepare('SELECT * FROM variation WHERE id=? FOR UPDATE');
+	$redis = get_redis();
+	$sales_count = $redis->incr("sales_count:$variation_id");
+
+    $db = option('db_conn');
+
+    $stmt = $db->prepare('SELECT * FROM variation WHERE id=?');
     $stmt->execute(array($variation_id));
     $variation = $stmt->fetch(PDO::FETCH_ASSOC);
-    if($variation['vacancy']<=0){
-        $db->rollback();
+
+    if($variation['total_seat'] < $sales_count){
         return html('soldout.html.php');
     }
 
@@ -165,28 +192,22 @@ dispatch_post('/buy', function() {
     $stmt = $db->prepare($sql);
     $stmt->execute(array(
        ':variation_id' => $variation_id,
-       ':num' => $variation['vacancy']));
+       ':num' => $sales_count));
 	$randomseat = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    $stmt = $db->prepare('INSERT INTO order_request (member_id,seat_id,v_name,t_name,a_name) VALUES (:id,:seat_id,:v_name,:t_name,:a_name)');
+    $stmt = $db->prepare('INSERT INTO order_request (member_id,seat_id,variation_id,v_name,t_name,a_name) VALUES (:id,:seat_id,:variation_id,:v_name,:t_name,:a_name)');
     $stmt->bindValue(':id', $member_id);
     $stmt->bindValue(':seat_id', $randomseat['seat_id']);
+    $stmt->bindValue(':variation_id', $variation_id);
     $stmt->bindValue(':v_name', $variation['name']);
     $stmt->bindValue(':t_name', $variation['ticket_name']);
     $stmt->bindValue(':a_name', $variation['artist_name']);
     $stmt->execute();
-    $order_id = $db->lastInsertId();
+	$order_id = $db->lastInsertId();
 
-    $stmt = $db->prepare('UPDATE stock SET order_id = :order_id WHERE id=:id');
-    $stmt->execute(array(
-        ':id' => $randomseat['stock_id'],
-        ':order_id' => $order_id,
-    ));
+	$stmt = $db->prepare('UPDATE stock SET order_id = :order_id WHERE id=:id');
+	$stmt->execute(array(':id'=>$randomseat['stock_id'],':order_id'=>$order_id));
 
-    $stmt = $db->prepare('UPDATE variation SET vacancy = vacancy -1 WHERE id=?');
-    $stmt->execute(array($variation_id));
-
-    $db->commit();
     set('member_id', $member_id);
     set('seat_id', $randomseat['seat_id']);
 
@@ -205,17 +226,20 @@ dispatch_post('/admin', function () {
         if (!empty($sql)) $db->exec($sql);
     }
     fclose($fh);
+
+    $redis = new Redis();
+    $redis->connect("127.0.0.1",6379);
+	$keys = $redis->keys('sales_count:*');
+	$redis->del($keys);
+
     redirect_to('/admin');
 });
 
 dispatch('/admin/order.csv', function () {
     $db = option('db_conn');
-    $stmt = $db->query(<<<SQL
-SELECT order_request.*, stock.seat_id, stock.variation_id, stock.updated_at
-FROM order_request JOIN stock ON order_request.id = stock.order_id
-ORDER BY order_request.id ASC
-SQL
-);
+
+    $stmt = $db->query("SELECT id,member_id,seat_id,variation_id,updated_at FROM order_request ORDER BY id ASC");
+
     $body = '';
     $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
     foreach ($orders as &$order) {

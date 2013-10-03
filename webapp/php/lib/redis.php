@@ -1,16 +1,25 @@
 <?php
 
+$redis = null;
+
 function get_redis()
 {
-    static $redis = null;
+    global $redis;
     if($redis){
         return $redis;
     }
     $redis = new Redis();
-    $redis->connect("127.0.0.1",6379);
+    $redis->connect("127.0.0.1",16379);
     return $redis;
 }
 
+function redis_close_if_open()
+{
+	global $redis;
+	if($redis){
+		$redis->close();
+	}
+}
 
 function redis_cache_get($key)
 {
