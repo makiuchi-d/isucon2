@@ -1,5 +1,6 @@
 <?php
 require_once('lib/redis.php');
+require_once('lib/apc_cache.php');
 
 if (php_sapi_name() === 'cli-server') {
     if (preg_match('/\.(?:png|jpg|jpeg|gif)$/', $_SERVER['REQUEST_URI'])) {
@@ -46,7 +47,7 @@ function before()
     $path = option('base_path');
     if ('/' === $path || preg_match('#^/(?:artist|ticket)#', $path)) {
         $cachekey = "recent_orders";
-        $cache = redis_cache_get($cachekey);
+        $cache = apc_cache_get($cachekey);
         if($cache){
             $rows = json_decode($cache,true);
         }
@@ -55,7 +56,7 @@ function before()
             $db = option('db_conn');
             $stmt = $db->query($sql);
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            redis_cache_set($cachekey,json_encode($rows),0.7);
+            apc_cache_set($cachekey,json_encode($rows),0.7);
         }
         set('recent_sold', $rows);
     }
@@ -69,7 +70,7 @@ function after($output)
 
 dispatch('/', function () {
     $cachekey = "page_cache_/";
-    $cache = redis_cache_get($cachekey);
+    $cache = apc_cache_get($cachekey);
     if($cache){
         return $cache;
     }
@@ -80,7 +81,7 @@ dispatch('/', function () {
     set('artists', $rows);
 
     $page =  html('index.html.php');
-    redis_cache_set($cachekey,$page,0.7);
+    apc_cache_set($cachekey,$page,0.7);
     return $page;
 });
 
@@ -88,7 +89,7 @@ dispatch('/artist/:id', function() {
     $id = params('id');
 
     $cachekey = "page_cache_artist:$id";
-    $cache = redis_cache_get($cachekey);
+    $cache = apc_cache_get($cachekey);
     if($cache){
         return $cache;
     }
@@ -121,7 +122,7 @@ dispatch('/artist/:id', function() {
     set('artist', $artist);
     set('tickets', $tickets);
     $page = html('artist.html.php');
-    redis_cache_set($cachekey,$page,0.7);
+    apc_cache_set($cachekey,$page,0.7);
     return $page;
 });
 
@@ -129,7 +130,7 @@ dispatch('/ticket/:id', function() {
     $ticket_id = params('id');
 
     $cachekey = "page_cache_ticket:$ticket_id";
-    $cache = redis_cache_get($cachekey);
+    $cache = apc_cache_get($cachekey);
     if($cache){
         return $cache;
     }
@@ -166,7 +167,7 @@ dispatch('/ticket/:id', function() {
 
     $page = html('ticket.html.php');
 
-    redis_cache_set($cachekey,$page,0.7);
+    apc_cache_set($cachekey,$page,0.7);
     return $page;
 });
 
