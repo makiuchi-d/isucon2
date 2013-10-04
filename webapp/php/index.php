@@ -1,6 +1,4 @@
 <?php
-require_once('lib/redis.php');
-require_once('lib/apc_cache.php');
 
 if (php_sapi_name() === 'cli-server') {
     if (preg_match('/\.(?:png|jpg|jpeg|gif)$/', $_SERVER['REQUEST_URI'])) {
@@ -9,6 +7,30 @@ if (php_sapi_name() === 'cli-server') {
 }
 
 require_once 'lib/limonade.php';
+require_once('lib/redis.php');
+require_once('lib/apc_cache.php');
+
+function get_variations($conditions=array())
+{
+	$variations = apc_fetch('variations_cache');
+	if(!$variations){
+		$db = option('db_conn');
+		$stmt = $db->query('SELECT * FROM variation');
+		$variations = $stmt->fetchAll(PDO::FETCH_ASSOC);
+		apc_store('variations_cache',$variations);
+	}
+	foreach($conditions as $k=>$v){
+		$tmp = array();
+		foreach($variations as $var){
+			if($var[$k]==$v){
+				$tmp[] = $var;
+			}
+		}
+		$variations = $tmp;
+	}
+	return $variations;
+}
+
 
 function configure()
 {
@@ -96,10 +118,7 @@ dispatch('/artist/:id', function() {
 
     $db = option('db_conn');
 
-	$sql = 'select * from variation where artist_id=?';
-    $stmt = $db->prepare($sql);
-    $stmt->execute(array($id));
-    $variations = $stmt->fetchAll();
+	$variations = get_variations(array('artist_id'=>$id));
 
     $redis = get_redis();
     $tickets = array();
@@ -137,9 +156,7 @@ dispatch('/ticket/:id', function() {
 
     $db = option('db_conn');
 
-    $stmt = $db->prepare('SELECT * FROM variation WHERE ticket_id = ?');
-    $stmt->execute(array($ticket_id));
-    $variations = $stmt->fetchAll(PDO::FETCH_ASSOC);
+	$variations = get_variations(array('ticket_id'=>$ticket_id));
     $ticket = array(
         'id' => $variations[0]['ticket_id'],
         'name' => $variations[0]['ticket_name'],
@@ -181,9 +198,8 @@ dispatch_post('/buy', function() {
 
     $db = option('db_conn');
 
-    $stmt = $db->prepare('SELECT * FROM variation WHERE id=?');
-    $stmt->execute(array($variation_id));
-    $variation = $stmt->fetch(PDO::FETCH_ASSOC);
+	$variations = get_variations(array('id'=>$variation_id));
+	$variation = $variations[0];
 
     if($variation['total_seat'] < $sales_count){
         return html('soldout.html.php');
@@ -228,10 +244,10 @@ dispatch_post('/admin', function () {
     }
     fclose($fh);
 
-    $redis = new Redis();
-    $redis->connect("127.0.0.1",6379);
+    $redis = get_redis();
 	$keys = $redis->keys('sales_count:*');
 	$redis->del($keys);
+	redis_close_if_open();
 
     redirect_to('/admin');
 });
