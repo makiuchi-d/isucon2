@@ -136,7 +136,13 @@ dispatch('/artist/:id', function() {
             $tickets[$v['ticket_id']]['name'] = $v['ticket_name'];
             $tickets[$v['ticket_id']]['count'] = 0;
         }
-        $sales_count = (int)apc_fetch("sales_count:{$v['id']}");
+
+        $redis = new Redis();
+        $redis->connect("127.0.0.1",6379);
+        $sales_count = $redis->get("sales_count:{$v['id']}");
+        $redis->close();
+        //$sales_count = (int)apc_fetch("sales_count:{$v['id']}");
+
         $tickets[$v['ticket_id']]['count'] += max(0,$v['total_seat']-$sales_count);
     }
 
@@ -173,7 +179,12 @@ dispatch('/ticket/:id', function() {
     );
 
     foreach ($variations as &$variation) {
-        $sales_count = (int)apc_fetch("sales_count:{$variation['id']}");
+
+        $redis = new Redis();
+        $redis->connect("127.0.0.1",6379);
+        $sales_count = $redis->get("sales_count:{$variation['id']}");
+        $redis->close();
+        //$sales_count = (int)apc_fetch("sales_count:{$variation['id']}");
         $variation['vacancy'] = max(0,$variation['total_seat']-$sales_count);
 
         $variation['stock'] = array();
@@ -199,7 +210,12 @@ dispatch_post('/buy', function() {
     $variation_id = $_POST['variation_id'];
     $member_id = $_POST['member_id'];
 
-    $sales_count = apc_inc("sales_count:$variation_id");
+    $redis = new Redis();
+    $redis->connect("127.0.0.1",6379);
+    $sales_count = $redis->incr("sales_count:$variation_id");
+    $redis->close();
+
+//    $sales_count = apc_inc("sales_count:$variation_id");
 
     $variations = get_variations(array('id'=>$variation_id));
     $variation = $variations[0];
@@ -254,6 +270,12 @@ dispatch_post('/admin', function () {
     foreach($variations as $v){
         apc_store("sales_count:{$v['id']}",0);
     }
+
+    $redis = new Redis();
+    $redis->connect("127.0.0.1",6379);
+    $keys = $redis->keys('sales_count:*');
+    $redis->del($keys);
+    $redis->close();
 
     redirect_to('/admin');
 });
