@@ -7,28 +7,43 @@ if (php_sapi_name() === 'cli-server') {
 }
 
 require_once 'lib/limonade.php';
-require_once('lib/redis.php');
-require_once('lib/apc_cache.php');
+
+function apc_cache_get($key)
+{
+    $now = microtime(true);
+    $expire = (float)apc_fetch("$key#expire");
+    if($expire>$now){
+        return apc_fetch("$key#data");
+    }
+    return null;
+}
+
+function apc_cache_set($key,$data,$expire)
+{
+    $now = microtime(true);
+    apc_store("$key#data",$data);
+    apc_store("$key#expire",$now+$expire);
+}
 
 function get_variations($conditions=array())
 {
-	$variations = apc_fetch('variations_cache');
-	if(!$variations){
-		$db = option('db_conn');
-		$stmt = $db->query('SELECT * FROM variation');
-		$variations = $stmt->fetchAll(PDO::FETCH_ASSOC);
-		apc_store('variations_cache',$variations);
-	}
-	foreach($conditions as $k=>$v){
-		$tmp = array();
-		foreach($variations as $var){
-			if($var[$k]==$v){
-				$tmp[] = $var;
-			}
-		}
-		$variations = $tmp;
-	}
-	return $variations;
+    $variations = apc_fetch('variations_cache');
+    if(!$variations){
+        $db = option('db_conn');
+        $stmt = $db->query('SELECT * FROM variation');
+        $variations = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        apc_store('variations_cache',$variations);
+    }
+    foreach($conditions as $k=>$v){
+        $tmp = array();
+        foreach($variations as $var){
+            if($var[$k]==$v){
+                $tmp[] = $var;
+            }
+        }
+        $variations = $tmp;
+    }
+    return $variations;
 }
 
 
@@ -84,12 +99,6 @@ function before()
     }
 }
 
-function after($output)
-{
-	redis_close_if_open();
-	return $output;
-}
-
 dispatch('/', function () {
     $cachekey = "page_cache_/";
     $cache = apc_cache_get($cachekey);
@@ -118,9 +127,8 @@ dispatch('/artist/:id', function() {
 
     $db = option('db_conn');
 
-	$variations = get_variations(array('artist_id'=>$id));
+    $variations = get_variations(array('artist_id'=>$id));
 
-    $redis = get_redis();
     $tickets = array();
     foreach($variations as $v){
         if(!isset($tickets[$v['ticket_id']])){
@@ -128,7 +136,7 @@ dispatch('/artist/:id', function() {
             $tickets[$v['ticket_id']]['name'] = $v['ticket_name'];
             $tickets[$v['ticket_id']]['count'] = 0;
         }
-        $sales_count = (int)$redis->get("sales_count:{$v['id']}");
+        $sales_count = (int)apc_fetch("sales_count:{$v['id']}");
         $tickets[$v['ticket_id']]['count'] += max(0,$v['total_seat']-$sales_count);
     }
 
@@ -156,7 +164,7 @@ dispatch('/ticket/:id', function() {
 
     $db = option('db_conn');
 
-	$variations = get_variations(array('ticket_id'=>$ticket_id));
+    $variations = get_variations(array('ticket_id'=>$ticket_id));
     $ticket = array(
         'id' => $variations[0]['ticket_id'],
         'name' => $variations[0]['ticket_name'],
@@ -164,11 +172,9 @@ dispatch('/ticket/:id', function() {
         'artist_name' => $variations[0]['artist_name'],
     );
 
-	$redis = get_redis();
-
     foreach ($variations as &$variation) {
-		$sales_count = (int)$redis->get("sales_count:{$variation['id']}");
-		$variation['vacancy'] = max(0,$variation['total_seat']-$sales_count);
+        $sales_count = (int)apc_fetch("sales_count:{$variation['id']}");
+        $variation['vacancy'] = max(0,$variation['total_seat']-$sales_count);
 
         $variation['stock'] = array();
         $stmt = $db->prepare('SELECT seat_id, order_id FROM stock WHERE variation_id = :id');
@@ -193,24 +199,23 @@ dispatch_post('/buy', function() {
     $variation_id = $_POST['variation_id'];
     $member_id = $_POST['member_id'];
 
-	$redis = get_redis();
-	$sales_count = $redis->incr("sales_count:$variation_id");
+    $sales_count = apc_inc("sales_count:$variation_id");
 
-    $db = option('db_conn');
-
-	$variations = get_variations(array('id'=>$variation_id));
-	$variation = $variations[0];
+    $variations = get_variations(array('id'=>$variation_id));
+    $variation = $variations[0];
 
     if($variation['total_seat'] < $sales_count){
         return html('soldout.html.php');
     }
 
-	$sql = 'SELECT * FROM seat_random_list WHERE variation_id=:variation_id AND num=:num';
+    $db = option('db_conn');
+
+    $sql = 'SELECT * FROM seat_random_list WHERE variation_id=:variation_id AND num=:num';
     $stmt = $db->prepare($sql);
     $stmt->execute(array(
        ':variation_id' => $variation_id,
        ':num' => $sales_count));
-	$randomseat = $stmt->fetch(PDO::FETCH_ASSOC);
+    $randomseat = $stmt->fetch(PDO::FETCH_ASSOC);
 
     $stmt = $db->prepare('INSERT INTO order_request (member_id,seat_id,variation_id,v_name,t_name,a_name) VALUES (:id,:seat_id,:variation_id,:v_name,:t_name,:a_name)');
     $stmt->bindValue(':id', $member_id);
@@ -220,10 +225,10 @@ dispatch_post('/buy', function() {
     $stmt->bindValue(':t_name', $variation['ticket_name']);
     $stmt->bindValue(':a_name', $variation['artist_name']);
     $stmt->execute();
-	$order_id = $db->lastInsertId();
+    $order_id = $db->lastInsertId();
 
-	$stmt = $db->prepare('UPDATE stock SET order_id = :order_id WHERE id=:id');
-	$stmt->execute(array(':id'=>$randomseat['stock_id'],':order_id'=>$order_id));
+    $stmt = $db->prepare('UPDATE stock SET order_id = :order_id WHERE id=:id');
+    $stmt->execute(array(':id'=>$randomseat['stock_id'],':order_id'=>$order_id));
 
     set('member_id', $member_id);
     set('seat_id', $randomseat['seat_id']);
@@ -244,10 +249,11 @@ dispatch_post('/admin', function () {
     }
     fclose($fh);
 
-    $redis = get_redis();
-	$keys = $redis->keys('sales_count:*');
-	$redis->del($keys);
-	redis_close_if_open();
+    apc_clear_cache('user');
+    $variations = get_variations();
+    foreach($variations as $v){
+        apc_store("sales_count:{$v['id']}",0);
+    }
 
     redirect_to('/admin');
 });
